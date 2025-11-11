@@ -50,6 +50,71 @@ def crop(frame, r):
     x,y,w,h = r
     return frame[y:y+h, x:x+w]
 
+
+def save_region_from_frame(name, rect, frame):
+    """Save a named region from a provided BGR frame.
+
+    name: string key for REGIONS (e.g., 'Info_text')
+    rect: (x,y,w,h)
+    frame: BGR image (numpy array)
+    """
+    cfg = load_config()
+    cfg.setdefault("REGIONS", {})[name] = list(rect)
+    os.makedirs(TEMPLATE_DIR, exist_ok=True)
+    path = os.path.join(TEMPLATE_DIR, f"region_{name}.png")
+    cv.imwrite(path, crop(frame, rect))
+    save_config(cfg)
+    return path
+
+
+def save_all_regions_from_frame(frame):
+    """Save templates for all regions currently present in config from frame.
+
+    Returns dict of name->path for saved templates. Raises KeyError if no regions.
+    """
+    cfg = load_config()
+    regs = cfg.get("REGIONS", {})
+    if not regs:
+        raise KeyError("No REGIONS defined in config.json to save.")
+    results = {}
+    for name, rect in regs.items():
+        path = os.path.join(TEMPLATE_DIR, f"region_{name}.png")
+        cv.imwrite(path, crop(frame, rect))
+        results[name] = path
+    return results
+
+
+def get_annotated_frame(frame):
+    """Return a copy of frame annotated with OCR_ROI and saved regions (BGR image).
+
+    This is useful for streaming a live view with overlays.
+    """
+    cfg = load_config()
+    disp = frame.copy()
+    # draw OCR ROI
+    try:
+        rx, ry, rw, rh = cfg.get("OCR_ROI", [0,0,0,0])
+        cv.rectangle(disp, (rx,ry), (rx+rw, ry+rh), (255,0,0), 2)
+        cv.putText(disp, "OCR_ROI", (rx, max(0,ry-8)), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255,0,0), 1)
+    except Exception:
+        pass
+    # draw regions
+    color_map = {
+        "Info_text": (0,165,255),
+        "Swipe": (0,255,255),
+        "Code": (0,255,0),
+        "Home": (255,0,255)
+    }
+    for name, rect in cfg.get("REGIONS", {}).items():
+        try:
+            rx, ry, rw, rh = rect
+            col = color_map.get(name, (200,200,200))
+            cv.rectangle(disp, (rx,ry), (rx+rw, ry+rh), col, 2)
+            cv.putText(disp, name, (rx, max(0,ry-8)), cv.FONT_HERSHEY_SIMPLEX, 0.5, col, 1)
+        except Exception:
+            continue
+    return disp
+
 def main():
     cfg = load_config()
 

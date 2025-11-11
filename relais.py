@@ -40,6 +40,8 @@ except Exception:
         BOARD = 10
         BCM = 11
         OUT = 1
+        HIGH = 1
+        LOW = 0
 
         def setwarnings(self, flag): pass
         def setmode(self, mode): pass
@@ -51,12 +53,15 @@ except Exception:
                 def ChangeDutyCycle(self, duty): pass
                 def stop(self): pass
             return _PWM()
+        def output(self, pin, value): pass
         def cleanup(self): pass
 
     GPIO = _DummyGPIO()  # type: ignore
 
 # Default pins (BCM numbering)
-_DEFAULT_PINS = {"UP": 17, "DOWN": 27, "PWR": 22}
+_DEFAULT_PINS = {"UP": 32, "DOWN": 33, "PWR": 35}
+# optional relay pin to switch USB/OTG path. If None, switch_usb will raise.
+_RELAY_PIN = 36
 
 # PWM / servo calibration defaults (these usually work for many SG90-like servos)
 _DEFAULT_FREQ = 50.0
@@ -111,6 +116,7 @@ _active_threads = set()
 
 
 def setup(up_pin: Optional[int] = None, down_pin: Optional[int] = None, pwr_pin: Optional[int] = None,
+          relay_pin: Optional[int] = None,
           freq: float = _DEFAULT_FREQ, min_duty: float = _MIN_DUTY, max_duty: float = _MAX_DUTY) -> None:
     """
     Initialize GPIO and servos. Pins use BCM numbering.
@@ -122,9 +128,25 @@ def setup(up_pin: Optional[int] = None, down_pin: Optional[int] = None, pwr_pin:
     if up_pin is not None: _pins["UP"] = up_pin
     if down_pin is not None: _pins["DOWN"] = down_pin
     if pwr_pin is not None: _pins["PWR"] = pwr_pin
+    # optional relay pin
+    global _RELAY_PIN
+    if relay_pin is not None:
+        _RELAY_PIN = int(relay_pin)
 
     GPIO.setwarnings(False)
     GPIO.setmode(GPIO.BCM)
+    # configure relay pin if provided
+    if _RELAY_PIN is not None:
+        try:
+            GPIO.setup(_RELAY_PIN, GPIO.OUT)
+            # default to USB (LOW) on startup
+            try:
+                GPIO.output(_RELAY_PIN, GPIO.LOW)
+            except Exception:
+                pass
+        except Exception:
+            # ignore hardware setup errors here; callers will see failures when switching
+            pass
     _servos = {
         "UP": _Servo(_pins["UP"], freq, min_duty, max_duty) if _pins.get("UP") is not None else None,
         "DOWN": _Servo(_pins["DOWN"], freq, min_duty, max_duty) if _pins.get("DOWN") is not None else None,
@@ -188,8 +210,41 @@ def _start_press_thread(servo_key: str, press_angle: int = 60, hold: float = 0.2
     return t
 
 
+def switch_usb(mode: str, pin: Optional[int] = None) -> bool:
+    """Switch the USB/OTG path using the configured relay.
+
+    mode: 'otg' or 'usb' (case-insensitive). 'otg' will set the relay pin LOW,
+    'usb' will set it HIGH. By default the function uses the pin configured
+    during `setup(relay_pin=...)`; you can override by passing `pin`.
+
+    Returns True on success, False on error.
+
+    Wiring assumption: a single GPIO-controlled relay is used where LOW means
+    OTG and HIGH means USB. If your hardware uses a different polarity or two
+    relays, adapt this function accordingly.
+    """
+    m = str(mode).strip().lower()
+    if m not in ("otg", "usb"):
+        raise ValueError("mode must be 'otg' or 'usb'")
+
+    target_pin = _RELAY_PIN if pin is None else int(pin)
+    if target_pin is None:
+        raise RuntimeError("Relay pin not configured. Call setup(relay_pin=...) first or pass pin=...")
+
+    if not _gpio_initialized:
+        setup()
+
+    try:
+        # OTG is active-low on this hardware: set LOW for OTG, HIGH for USB
+        val = GPIO.LOW if m == "otg" else GPIO.HIGH
+        GPIO.output(target_pin, val)
+        return True
+    except Exception:
+        return False
+
+
 # Exported functions named UP, DOWN, PWR per request
-def UP(seconds: float = 0.25, press_angle: int = 60):
+def UP(seconds: float = 0.1, press_angle: int = 60):
     """
     Trigger the UP servo (volume up).
 
@@ -202,7 +257,7 @@ def UP(seconds: float = 0.25, press_angle: int = 60):
     return _start_press_thread("UP", press_angle=press_angle, hold=float(seconds))
 
 
-def DOWN(seconds: float = 0.25, press_angle: int = 120):
+def DOWN(seconds: float = 0.1, press_angle: int = 120):
     """
     Trigger the DOWN servo (volume down).
 
@@ -215,7 +270,7 @@ def DOWN(seconds: float = 0.25, press_angle: int = 120):
     return _start_press_thread("DOWN", press_angle=press_angle, hold=float(seconds))
 
 
-def PWR(seconds: float = 0.5, press_angle: int = 60):
+def PWR(seconds: float = 0.1, press_angle: int = 60):
     """
     Trigger the PWR servo (power button).
 
@@ -228,7 +283,7 @@ def PWR(seconds: float = 0.5, press_angle: int = 60):
     return _start_press_thread("PWR", press_angle=press_angle, hold=float(seconds))
 
 
-__all__ = ["setup", "UP", "DOWN", "PWR", "set_rest_angle", "cleanup", "cleanup_and_wait"]
+__all__ = ["setup", "UP", "DOWN", "PWR", "switch_usb", "set_rest_angle", "cleanup", "cleanup_and_wait"]
 
 
 def set_rest_angle(angle: int):

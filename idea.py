@@ -1,9 +1,24 @@
 import cam 
+import relais as rpi
 
 
 wrong_code = "Falscher Code. Bitte erneut versuchen."
 swipe_text = "Zum Entsperren wischen"
 
+def clear_cache():
+    # Trigger Reboot
+    rpi.DOWN(seconds=5)
+    rpi.PWR(seconds=5)
+    rpi.switch_usb(mode="usb")  # switch to USB mode for recovery
+    rpi.UP(seconds=5)
+    rpi.PWR(seconds=5)
+    for i in range(5):
+        rpi.DOWN()
+    rpi.PWR()
+    rpi.DOWN()
+    rpi.PWR()
+    rpi.switch_usb(mode="otg")  # switch back to OTG mode
+    rpi.cleanup()
 
 def get_timeout():
     text = cam.get_text('Info_text')  # uses default timeout internally

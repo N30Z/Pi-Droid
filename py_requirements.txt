@@ -2,6 +2,7 @@ opencv-python>=4.5
 numpy>=1.19
 Pillow>=8.0
 pytesseract>=0.3.8
+flask
 
 # Note: pytesseract is a Python wrapper for the Tesseract OCR engine.
 # You must also install the Tesseract binary on your system separately.

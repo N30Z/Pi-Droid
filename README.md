@@ -1,1 +1,5 @@
 # Pi-Droid
+GPIO
+_DEFAULT_PINS = {"UP": 32, "DOWN": 33, "PWR": 35}
+_RELAY_PIN = 36
+
