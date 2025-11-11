@@ -26,6 +26,16 @@ NUM_KEYCODES = {
 }
 ENTER_KEYCODE = 0x28
 
+# Common consumer (media) usage IDs from the HID Usage Tables (Consumer Page)
+# These are the standard usage IDs for multimedia keys. Many HID gadget setups
+# expose a separate consumer control device (e.g. /dev/hidg1) which accepts a
+# 2-byte report containing the usage ID. If your gadget uses a different report
+# format or a different device path, adjust the `device` parameter accordingly.
+VOLUME_UP_USAGE = 0xE9
+VOLUME_DOWN_USAGE = 0xEA
+# Power key usage - this can vary; adjust if your gadget expects a different code.
+POWER_USAGE = 0x30
+
 
 class HIDTyper:
     """Type digits to a HID gadget device (e.g. /dev/hidg0).
@@ -77,6 +87,59 @@ def type_numbers_on_device(device: Path, numbers: str, delay: float = 0.03) -> N
     """Convenience wrapper: create a HIDTyper and send numbers."""
     typer = HIDTyper(device)
     typer.type_numbers(numbers, delay=delay)
+
+
+def _send_raw_report(device: Path, data: bytes) -> None:
+    """Send raw bytes to the HID device (no interpretation).
+
+    Useful for consumer control reports which often have different report
+    lengths than the keyboard (e.g. 2 bytes). This function will write the
+    bytes and then write a release (zeros) if the length is >0.
+    """
+    dev = Path(device)
+    if not dev.exists():
+        raise FileNotFoundError(f"{dev} not found. Gadget not set up or not bound?")
+    with open(str(dev), "wb+", buffering=0) as fd:
+        fd.write(data)
+        fd.flush()
+        time.sleep(0.02)
+        # release (send zeros of same length)
+        fd.write(b"\x00" * len(data))
+        fd.flush()
+        time.sleep(0.02)
+
+
+def send_consumer_usage(device: Path, usage: int) -> None:
+    """Send a Consumer Page usage ID to the given device.
+
+    By convention many setups expose a consumer control HID at /dev/hidg1 which
+    accepts a 2-byte report containing the usage ID (low byte first). This
+    helper packs the usage into 2 bytes and sends it as a press+release.
+    """
+    if usage < 0 or usage > 0xFFFF:
+        raise ValueError("usage must be a 0..0xFFFF integer")
+    lo = usage & 0xFF
+    hi = (usage >> 8) & 0xFF
+    _send_raw_report(device, bytes([lo, hi]))
+
+
+def send_volume_up(device: Path = Path("/dev/hidg1")) -> None:
+    """Send a Volume Up consumer control event to the device."""
+    send_consumer_usage(device, VOLUME_UP_USAGE)
+
+
+def send_volume_down(device: Path = Path("/dev/hidg1")) -> None:
+    """Send a Volume Down consumer control event to the device."""
+    send_consumer_usage(device, VOLUME_DOWN_USAGE)
+
+
+def send_power(device: Path = Path("/dev/hidg1")) -> None:
+    """Send a Power button event. Usage ID may vary by platform/gadget.
+
+    If this doesn't perform the expected action, check your HID report
+    descriptor and adjust POWER_USAGE or the target device path.
+    """
+    send_consumer_usage(device, POWER_USAGE)
 
 
 if __name__ == "__main__":
