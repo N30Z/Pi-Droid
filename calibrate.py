@@ -22,7 +22,10 @@ def load_config():
         "OCR_ROI": [900, 630, 340, 60],
         "THRESH_A": 0.85,
         "THRESH_B": 0.85,
-        "STABLE_FRAMES": 3
+        "STABLE_FRAMES": 3,
+        # named regions that will be used by the OCR script later
+        # keys: Info_text, Swipe, Code, Home -> each value is [x,y,w,h]
+        "REGIONS": {}
     }
 
 def save_config(cfg):
@@ -57,9 +60,21 @@ def main():
     if not cap.isOpened():
         raise RuntimeError("Kamera nicht gefunden.")
 
-    win = "Kalibrierung (Ziehen = Auswahl; 1/2=Template; o=OCR-ROI; s=Screenshot; q=Quit)"
+    # show key mapping for named regions
+    win = (
+        "Kalibrierung (Ziehen = Auswahl; 1/2=Template; o=OCR-ROI; "
+        "i=Info_text; w=Swipe; c=Code; h=Home; s=Screenshot; q=Quit)"
+    )
     cv.namedWindow(win)
     cv.setMouseCallback(win, on_mouse)
+
+    # mapping from key to region name
+    region_keys = {
+        'i': 'Info_text',
+        'w': 'Swipe',
+        'c': 'Code',
+        'h': 'Home'
+    }
 
     print("Bereit. Ziehe eine Box über den relevanten Bereich.")
     while True:
@@ -77,6 +92,23 @@ def main():
         cv.rectangle(disp, (rx,ry), (rx+rw, ry+rh), (255,0,0), 2)
         cv.putText(disp, "OCR_ROI", (rx, max(0,ry-8)), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255,0,0), 1)
 
+        # draw named regions saved in config
+        # use consistent colors per region name (fallback color if unknown)
+        color_map = {
+            "Info_text": (0,165,255),  # orange
+            "Swipe": (0,255,255),      # yellow
+            "Code": (0,255,0),         # green
+            "Home": (255,0,255)        # magenta
+        }
+        for name, rect in cfg.get("REGIONS", {}).items():
+            try:
+                rx, ry, rw, rh = rect
+            except Exception:
+                continue
+            col = color_map.get(name, (200,200,200))
+            cv.rectangle(disp, (rx,ry), (rx+rw, ry+rh), col, 2)
+            cv.putText(disp, name, (rx, max(0,ry-8)), cv.FONT_HERSHEY_SIMPLEX, 0.5, col, 1)
+
         cv.imshow(win, disp)
         k = cv.waitKey(10) & 0xFF
         if k == ord('q'):
@@ -92,6 +124,15 @@ def main():
         elif k == ord('o') and sel:
             cfg["OCR_ROI"] = list(sel)
             save_config(cfg)
+        elif k in (ord('i'), ord('w'), ord('c'), ord('h')) and sel:
+            # save named region for OCR later
+            name = region_keys.get(chr(k))
+            if name:
+                cfg.setdefault("REGIONS", {})[name] = list(sel)
+                path = os.path.join(TEMPLATE_DIR, f"region_{name}.png")
+                cv.imwrite(path, crop(frame, sel))
+                save_config(cfg)
+                print(f"[OK] Region '{name}' gespeichert: {path}")
         elif k == ord('s'):
             fn = f"screenshot_{int(time.time())}.png"
             cv.imwrite(fn, frame)

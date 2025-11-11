@@ -1,0 +1,10 @@
+opencv-python>=4.5
+numpy>=1.19
+Pillow>=8.0
+pytesseract>=0.3.8
+
+# Note: pytesseract is a Python wrapper for the Tesseract OCR engine.
+# You must also install the Tesseract binary on your system separately.
+# On Windows, download and install from: https://github.com/tesseract-ocr/tesseract
+# On Debian/Ubuntu: sudo apt-get install tesseract-ocr
+# After installing Tesseract, make sure its executable is in your PATH.

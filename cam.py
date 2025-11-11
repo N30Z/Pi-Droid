@@ -1,162 +1,169 @@
-# main.py
+"""Camera helpers used by Pi-Droid.
+
+Provides two main functions intended for importing and use by an OCR script:
+
+- get_text(name, ocr_func=None, frame=None, camera_index=0)
+  - name: 'swipe' or 'info_text' (case-insensitive)
+  - ocr_func: optional callable taking a BGR image (numpy array) and returning text.
+    If not provided, this will try to use pytesseract if available.
+  - frame: optional BGR image to use instead of capturing from camera.
+
+- check(name, threshold=0.85, frame=None, camera_index=0)
+  - name: 'code' or 'home' (case-insensitive)
+  - returns True when the live region matches the template image saved by
+    `calibrate.py` (templates/region_<Name>.png) above the given threshold.
+
+The module reads region coordinates from `config.json` (same format as
+`calibrate.py`) and uses `templates/` for stored region images.
+"""
+
+from typing import Callable, Optional, Tuple
+import json
+import os
 import cv2 as cv
 import numpy as np
-import pytesseract
-import time
-from collections import deque
 
-# ============ KONFIG ============
-CAMERA_INDEX = 0            # 0.. je nach Grabber/Kamera
-FRAME_WIDTH  = 1280         # kleiner = schneller
-FRAME_HEIGHT = 720
-FPS_LIMIT    = 10
+CONFIG_PATH = "config.json"
+TEMPLATE_DIR = "templates"
 
-TEMPLATE_A   = "templates/state_a.png"
-TEMPLATE_B   = "templates/state_b.png"
 
-# ROI für OCR (x, y, w, h) in Pixeln relativ zum skalierten Frame
-OCR_ROI      = (900, 630, 340, 60)
+def _load_config() -> dict:
+    if os.path.exists(CONFIG_PATH):
+        with open(CONFIG_PATH, "r") as f:
+            return json.load(f)
+    raise FileNotFoundError(f"{CONFIG_PATH} not found. Run calibrate.py first.")
 
-# Schwellwerte 0..1 für matchTemplate(TM_CCOEFF_NORMED)
-THRESH_A     = 0.85
-THRESH_B     = 0.85
 
-# Wie viele aufeinanderfolgende Frames müssen den Zustand bestätigen?
-STABLE_FRAMES = 3
+def _normalize_name(name: str) -> str:
+    # accept both lowercase short names and the calibrated keys
+    if not isinstance(name, str):
+        raise TypeError("name must be a string")
+    n = name.strip().lower()
+    mapping = {
+        "info_text": "Info_text",
+        "infotext": "Info_text",
+        "info": "Info_text",
+        "swipe": "Swipe",
+        "code": "Code",
+        "home": "Home",
+    }
+    return mapping.get(n, name)
 
-# Optional: MQTT für Meldungen (Broker/Topic anpassen)
-MQTT_ENABLE = False
-MQTT_BROKER = "127.0.0.1"
-MQTT_TOPIC  = "screen/alerts"
 
-# ============ HILFSFUNKTIONEN ============
-def preprocess_gray(img):
-    g = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
-    g = cv.GaussianBlur(g, (3,3), 0)
-    return g
+def _get_region_coords(cfg: dict, name: str) -> Tuple[int, int, int, int]:
+    regs = cfg.get("REGIONS", {})
+    if name in regs:
+        r = regs[name]
+        if len(r) != 4:
+            raise ValueError(f"Region '{name}' has invalid coords: {r}")
+        return tuple(map(int, r))
+    raise KeyError(f"Region '{name}' not found in config.json (REGIONS)")
 
-def multi_scale_match(gray_frame, gray_tpl, scales=(1.0, 0.95, 0.9, 1.05)):
-    """Einfaches Multi-Scale Matching für kleine Skalierungsfehler."""
-    best_val, best_loc, best_scale = -1, None, 1.0
-    for s in scales:
-        th, tw = int(gray_tpl.shape[0]*s), int(gray_tpl.shape[1]*s)
-        if th < 10 or tw < 10: 
-            continue
-        tpl_resized = cv.resize(gray_tpl, (tw, th), interpolation=cv.INTER_AREA)
-        res = cv.matchTemplate(gray_frame, tpl_resized, cv.TM_CCOEFF_NORMED)
-        min_val, max_val, min_loc, max_loc = cv.minMaxLoc(res)
-        if max_val > best_val:
-            best_val, best_loc, best_scale = max_val, max_loc, s
-    return best_val, best_loc, best_scale
 
-def ocr_text(img_roi):
-    roi = cv.cvtColor(img_roi, cv.COLOR_BGR2GRAY)
-    roi = cv.threshold(roi, 0, 255, cv.THRESH_BINARY+cv.THRESH_OTSU)[1]
-    # PSM 7: einzelne Textzeile; Sprache deutsch (deu) + englisch (eng) falls nötig
-    cfg = r'--oem 3 --psm 7 -l deu+eng'
-    txt = pytesseract.image_to_string(roi, config=cfg)
-    return txt.strip()
-
-# Optional: MQTT
-client = None
-if MQTT_ENABLE:
-    try:
-        import paho.mqtt.client as mqtt
-        client = mqtt.Client()
-        client.connect(MQTT_BROKER, 1883, 60)
-    except Exception as e:
-        print("MQTT deaktiviert (Fehler):", e)
-        client = None
-
-def notify(event, payload=None):
-    msg = {"event": event, "payload": payload or {}}
-    print(f"[ALERT] {msg}")
-    if client:
-        import json
-        client.publish(MQTT_TOPIC, json.dumps(msg), qos=1, retain=False)
-
-# ============ HAUPTLOGIK ============
-def main():
-    # Videoquelle
-    cap = cv.VideoCapture(CAMERA_INDEX)
-    cap.set(cv.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-    cap.set(cv.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
-
+def _capture_frame(camera_index: int = 0) -> np.ndarray:
+    cap = cv.VideoCapture(camera_index)
     if not cap.isOpened():
-        raise RuntimeError("Kamera/Grabber nicht gefunden.")
-
-    # Templates laden (grau vorverarbeiten)
-    tpl_a = preprocess_gray(cv.imread(TEMPLATE_A, cv.IMREAD_COLOR))
-    tpl_b = preprocess_gray(cv.imread(TEMPLATE_B, cv.IMREAD_COLOR))
-    if tpl_a is None or tpl_b is None:
-        raise RuntimeError("Template-Bilder nicht gefunden. Pfade prüfen.")
-
-    state_history = deque(maxlen=STABLE_FRAMES)
-    last_stable_state = None
-    last_ocr_text = ""
-
-    t_last = 0
-    print("Starte Überwachung … (q zum Beenden)")
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("Frame konnte nicht gelesen werden.")
-            break
-
-        # optional framerate drosseln
-        now = time.time()
-        if now - t_last < 1.0 / FPS_LIMIT:
-            # kleine Wartezeit
-            time.sleep(max(0, (1.0 / FPS_LIMIT) - (now - t_last)))
-        t_last = time.time()
-
-        gray = preprocess_gray(frame)
-
-        # Template-Matching
-        val_a, loc_a, sc_a = multi_scale_match(gray, tpl_a)
-        val_b, loc_b, sc_b = multi_scale_match(gray, tpl_b)
-
-        # Aktuellen Frame-Zustand bestimmen
-        if val_a >= THRESH_A and val_a >= val_b:
-            cur_state = "STATE_A"
-            score = float(val_a)
-        elif val_b >= THRESH_B and val_b >= val_a:
-            cur_state = "STATE_B"
-            score = float(val_b)
-        else:
-            cur_state = "ANOMALY"
-            score = float(max(val_a, val_b))
-
-        state_history.append(cur_state)
-
-        # Stabilen Zustand erkennen (Entprellung)
-        if len(state_history) == STABLE_FRAMES and all(s == state_history[0] for s in state_history):
-            stable = state_history[0]
-            if stable != last_stable_state:
-                last_stable_state = stable
-                notify("state_change", {"state": stable, "score": score})
-
-        # OCR auf definierter ROI
-        x, y, w, h = OCR_ROI
-        roi = frame[y:y+h, x:x+w].copy()
-        text = ocr_text(roi)
-        if text and text != last_ocr_text:
-            last_ocr_text = text
-            notify("ocr_update", {"text": text})
-
-        # Debug-Overlay (kommentierbar)
-        debug = frame.copy()
-        cv.rectangle(debug, (OCR_ROI[0], OCR_ROI[1]), (OCR_ROI[0]+OCR_ROI[2], OCR_ROI[1]+OCR_ROI[3]), (0,255,0), 2)
-        cv.putText(debug, f"A:{val_a:.2f}  B:{val_b:.2f}  cur:{cur_state}", (20, 40), cv.FONT_HERSHEY_SIMPLEX, 0.9, (0,0,255), 2)
-        cv.putText(debug, f"OCR: {text}", (20, 80), cv.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,255), 2)
-
-        cv.imshow("Monitor", debug)
-        if cv.waitKey(1) & 0xFF == ord('q'):
-            break
-
+        raise RuntimeError(f"Camera {camera_index} not available")
+    ok, frame = cap.read()
     cap.release()
-    cv.destroyAllWindows()
+    if not ok or frame is None:
+        raise RuntimeError("Failed to capture frame from camera")
+    return frame
 
-if __name__ == "__main__":
-    main()
+
+def crop(frame: np.ndarray, rect: Tuple[int, int, int, int]) -> np.ndarray:
+    x, y, w, h = rect
+    return frame[y : y + h, x : x + w]
+
+
+def get_text(
+    name: str,
+    ocr_func: Optional[Callable[[np.ndarray], str]] = None,
+    frame: Optional[np.ndarray] = None,
+    camera_index: int = 0,
+) -> str:
+    """Return text from the named region.
+
+    If ocr_func is provided it will be called with the cropped BGR image and
+    should return a string. Otherwise the function will attempt to use
+    pytesseract (if installed) and raise a helpful error if not available.
+    """
+    cfg = _load_config()
+    name_key = _normalize_name(name)
+    region = _get_region_coords(cfg, name_key)
+
+    if frame is None:
+        frame = _capture_frame(camera_index)
+
+    img = crop(frame, region)
+
+    if ocr_func is not None:
+        return ocr_func(img)
+
+    # try pytesseract if available
+    try:
+        import pytesseract
+        from PIL import Image
+    except Exception as e:
+        raise RuntimeError(
+            "No ocr_func provided and pytesseract not available. "
+            "Install pytesseract or pass an ocr_func(image)->str."
+        ) from e
+
+    # convert BGR -> RGB -> PIL
+    rgb = cv.cvtColor(img, cv.COLOR_BGR2RGB)
+    pil = Image.fromarray(rgb)
+    text = pytesseract.image_to_string(pil)
+    return text.strip()
+
+
+def check(
+    name: str,
+    threshold: float = 0.85,
+    frame: Optional[np.ndarray] = None,
+    camera_index: int = 0,
+) -> bool:
+    """Check if the current region matches the stored template image.
+
+    Returns True if the normalized template matching score is >= threshold.
+    """
+    cfg = _load_config()
+    name_key = _normalize_name(name)
+
+    # we expect templates saved as templates/region_<Name>.png by calibrate.py
+    tmpl_path = os.path.join(TEMPLATE_DIR, f"region_{name_key}.png")
+    if not os.path.exists(tmpl_path):
+        raise FileNotFoundError(f"Template not found: {tmpl_path}")
+
+    template = cv.imread(tmpl_path, cv.IMREAD_COLOR)
+    if template is None:
+        raise RuntimeError(f"Failed to load template image: {tmpl_path}")
+
+    region = _get_region_coords(cfg, name_key)
+
+    if frame is None:
+        frame = _capture_frame(camera_index)
+
+    img = crop(frame, region)
+
+    # If sizes differ, resize template to match captured region for direct comparison
+    th, tw = template.shape[:2]
+    ih, iw = img.shape[:2]
+    tmpl = template
+    if (th, tw) != (ih, iw):
+        try:
+            tmpl = cv.resize(template, (iw, ih), interpolation=cv.INTER_AREA)
+        except Exception:
+            tmpl = template
+
+    # convert to gray for template matching
+    g_img = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
+    g_tmpl = cv.cvtColor(tmpl, cv.COLOR_BGR2GRAY)
+
+    # perform normalized cross-correlation
+    res = cv.matchTemplate(g_img, g_tmpl, cv.TM_CCOEFF_NORMED)
+    min_val, max_val, min_loc, max_loc = cv.minMaxLoc(res)
+    return float(max_val) >= float(threshold)
+
+
+__all__ = ["get_text", "check", "crop"]
