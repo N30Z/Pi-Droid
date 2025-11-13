@@ -1,0 +1,72 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Pi-Droid Control</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 0; }
+      .container { display:flex; height: 100vh; }
+      .left { width: 320px; padding: 16px; box-sizing: border-box; background:#eee; }
+      .right { flex:1; display:flex; align-items:center; justify-content:center; position:relative; }
+      button { display:block; width:100%; margin:8px 0; padding:12px; font-size:16px; }
+      .progress { position: absolute; bottom:0; left:0; right:0; background:#ddd; padding:8px; }
+      .bar { width:100%; background:#ccc; height:28px; position:relative; }
+      .bar-inner { background:#4caf50; height:100%; width:30%; display:flex; align-items:center; justify-content:center; color:white; }
+      .notice { background:#fff3cd; color:#664d03; border:1px solid #ffecb5; padding:10px; border-radius:6px; margin-top:10px; display:none; }
+      .notice a { color:#664d03; text-decoration: underline; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="left">
+        <button onclick="api('/api/start')">Start</button>
+        <button onclick="api('/api/stop')">Stop</button>
+        <button onclick="api('/api/pause')">Pause</button>
+        <button onclick="api('/api/resume')">Resume</button>
+        <hr>
+        <button onclick="window.open('/calibrate','_blank')">Run all camera calibrations</button>
+        <div id="goal" style="margin-top:16px;color:darkred;font-weight:bold;"></div>
+        <div id="regionsNotice" class="notice"></div>
+      </div>
+      <div class="right">
+        <img id="video" src="/video_feed" style="max-width:100%; max-height:100%;"/>
+      </div>
+    </div>
+    <div class="progress">
+      <div>Digits: <span id="digits">0</span> &nbsp; Line: <span id="line">0</span>/<span id="lines">0</span></div>
+      <div class="bar"><div class="bar-inner" id="barinner">0%</div></div>
+    </div>
+
+    <script>
+      function api(path){ fetch(path).then(r=>r.json()).then(d=>updateStatus(d)) }
+      function updateStatus(d){
+        document.getElementById('digits').textContent = d.current_digits || 0;
+        document.getElementById('line').textContent = d.line_progress || 0;
+        document.getElementById('lines').textContent = d.num_lines || 0;
+        var pct = d.num_lines ? Math.round((d.line_progress/d.num_lines)*100) : 0;
+        document.getElementById('barinner').style.width = pct + '%';
+        document.getElementById('barinner').textContent = pct + '%';
+        if(d.goal_msg){ document.getElementById('goal').textContent = d.goal_msg }
+      }
+      setInterval(function(){ fetch('/api/status').then(r=>r.json()).then(updateStatus) }, 1000);
+
+      function checkRegions(){
+        fetch('/api/regions')
+          .then(r => r.json())
+          .then(j => {
+            const box = document.getElementById('regionsNotice');
+            const names = Object.keys(j.regions || {});
+            if(names.length === 0){
+              box.style.display = 'block';
+              box.innerHTML = 'No saved regions found. <a href="/calibrate" target="_blank">Open Calibration</a> to draw and save required regions.';
+            } else {
+              box.style.display = 'none';
+              box.innerHTML = '';
+            }
+          })
+          .catch(()=>{});
+      }
+      checkRegions();
+      setInterval(checkRegions, 5000);
+    </script>
+  </body>
+</html>

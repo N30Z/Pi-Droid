@@ -1,12 +1,14 @@
-from flask import Flask, render_template_string, Response, jsonify, request
+from flask import Flask, render_template, Response, jsonify, request
 import threading
 import cv2
 import time
 import calibrate
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder="templates")
 
+# ---------------------------
 # Shared camera capture
+# ---------------------------
 class CameraThread:
     def __init__(self, index=0):
         self.cap = cv2.VideoCapture(index)
@@ -36,10 +38,36 @@ class CameraThread:
         except Exception:
             pass
 
-
 cam = CameraThread()
 
+# ---------------------------
+# Helper to interop w/ calibrate module
+# ---------------------------
+def _list_regions_safe():
+    for fname in ("list_regions", "get_saved_regions", "get_regions"):
+        fn = getattr(calibrate, fname, None)
+        if callable(fn):
+            try:
+                res = fn()
+                if isinstance(res, dict):
+                    return res
+                if isinstance(res, (list, tuple)):
+                    out = {}
+                    for item in res:
+                        if isinstance(item, dict) and "name" in item and "rect" in item:
+                            out[item["name"]] = item["rect"]
+                    return out
+            except Exception:
+                pass
+    for attr in ("REGIONS", "regions", "SAVED_REGIONS"):
+        obj = getattr(calibrate, attr, None)
+        if isinstance(obj, dict):
+            return obj
+    return {}
+
+# ---------------------------
 # process state
+# ---------------------------
 state = {
     "running": False,
     "paused": False,
@@ -49,73 +77,28 @@ state = {
     "goal_msg": "",
 }
 
-PAGE = """
-<!doctype html>
-<html>
-  <head>
-    <title>Pi-Droid Control</title>
-    <style>
-      body { font-family: Arial, sans-serif; margin: 0; }
-      .container { display:flex; height: 100vh; }
-      .left { width: 320px; padding: 16px; box-sizing: border-box; background:#eee; }
-      .right { flex:1; display:flex; align-items:center; justify-content:center; }
-      button { display:block; width:100%; margin:8px 0; padding:12px; font-size:16px; }
-      .progress { position: absolute; bottom:0; left:0; right:0; background:#ddd; padding:8px; }
-      .bar { width:100%; background:#ccc; height:28px; position:relative; }
-      .bar-inner { background:#4caf50; height:100%; width:30%; display:flex; align-items:center; justify-content:center; color:white; }
-    </style>
-  </head>
-  <body>
-    <div class="container">
-      <div class="left">
-        <button onclick="api('/api/start')">Start</button>
-        <button onclick="api('/api/stop')">Stop</button>
-        <button onclick="api('/api/pause')">Pause</button>
-        <button onclick="api('/api/resume')">Resume</button>
-        <hr>
-        <button onclick="api('/api/calibrate_all')">Run all camera calibrations</button>
-        <div id="goal" style="margin-top:16px;color:darkred;font-weight:bold;"></div>
-      </div>
-      <div class="right">
-        <img id="video" src="/video_feed" style="max-width:100%; max-height:100%;"/>
-      </div>
-    </div>
-    <div class="progress">
-      <div>Digits: <span id="digits">0</span> &nbsp; Line: <span id="line">0</span>/<span id="lines">0</span></div>
-      <div class="bar"><div class="bar-inner" id="barinner">0%</div></div>
-    </div>
-
-    <script>
-      function api(path){ fetch(path).then(r=>r.json()).then(d=>updateStatus(d)) }
-      function updateStatus(d){
-        document.getElementById('digits').textContent = d.current_digits || 0;
-        document.getElementById('line').textContent = d.line_progress || 0;
-        document.getElementById('lines').textContent = d.num_lines || 0;
-        var pct = d.num_lines ? Math.round((d.line_progress/d.num_lines)*100) : 0;
-        document.getElementById('barinner').style.width = pct + '%';
-        document.getElementById('barinner').textContent = pct + '%';
-        if(d.goal_msg){ document.getElementById('goal').textContent = d.goal_msg }
-      }
-      // poll status
-      setInterval(function(){ fetch('/api/status').then(r=>r.json()).then(updateStatus) }, 1000);
-    </script>
-  </body>
-</html>
-"""
-
-
+# ---------------------------
+# Pages
+# ---------------------------
 @app.route('/')
 def index():
-    return render_template_string(PAGE)
+    return render_template("index.html")
 
+@app.route('/calibrate')
+def calibrate_page():
+    # Fixed mapping in order of windows: UL, UR, LL, LR
+    region_names = ["Info_text", "Swipe", "Home", "Code"]
+    return render_template("calibrate.html", region_names=region_names)
 
+# ---------------------------
+# MJPEG feed
+# ---------------------------
 def gen_camera():
     while True:
         frame = cam.get_frame()
         if frame is None:
             time.sleep(0.05)
             continue
-        # annotate via calibrate helper
         try:
             disp = calibrate.get_annotated_frame(frame)
         except Exception:
@@ -127,16 +110,16 @@ def gen_camera():
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + data + b'\r\n')
 
-
 @app.route('/video_feed')
 def video_feed():
     return Response(gen_camera(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
-
+# ---------------------------
+# APIs - status & control
+# ---------------------------
 @app.route('/api/status')
 def api_status():
     return jsonify(state)
-
 
 @app.route('/api/start')
 def api_start():
@@ -144,26 +127,36 @@ def api_start():
     state['paused'] = False
     return jsonify(state)
 
-
 @app.route('/api/stop')
 def api_stop():
     state['running'] = False
     state['paused'] = False
     return jsonify(state)
 
-
 @app.route('/api/pause')
 def api_pause():
     state['paused'] = True
     return jsonify(state)
-
 
 @app.route('/api/resume')
 def api_resume():
     state['paused'] = False
     return jsonify(state)
 
+# ---------------------------
+# APIs - regions (list)
+# ---------------------------
+@app.route('/api/regions', methods=['GET'])
+def api_regions():
+    regions = _list_regions_safe()
+    sane = {k: [int(v[0]), int(v[1]), int(v[2]), int(v[3])]
+            for k, v in regions.items()
+            if isinstance(v, (list, tuple)) and len(v) == 4}
+    return jsonify({"regions": sane})
 
+# ---------------------------
+# Existing calibration APIs
+# ---------------------------
 @app.route('/api/calibrate_all')
 def api_calibrate_all():
     frame = cam.get_frame()
@@ -175,7 +168,25 @@ def api_calibrate_all():
     except KeyError as e:
         return jsonify({'error': str(e)}), 400
 
+@app.route('/api/calibrate_save', methods=['POST'])
+def api_calibrate_save():
+    data = request.get_json() or {}
+    name = data.get('name')
+    rect = data.get('rect')
+    if not name or not rect:
+        return jsonify({'error':'missing name or rect'}), 400
+    frame = cam.get_frame()
+    if frame is None:
+        return jsonify({'error':'no frame available on server'}), 400
+    try:
+        path = calibrate.save_region_from_frame(name, rect, frame)
+        return jsonify({'path': path})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
+# ---------------------------
+# Goal API
+# ---------------------------
 @app.route('/api/goal', methods=['POST'])
 def api_goal():
     data = request.get_json() or {}
@@ -184,10 +195,30 @@ def api_goal():
         return jsonify({'error':'missing value'}), 400
     msg = f"Found it: {val}!!"
     state['goal_msg'] = msg
-    # automatically stop
     state['running'] = False
     return jsonify({'msg': msg})
 
-
+# ---------------------------
+# App runner
+# ---------------------------
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080, threaded=True)
+    import os
+    print("Template path:", os.path.abspath(app.template_folder))
+    hosts = [ ('0.0.0.0', 8888), ('127.0.0.1', 8080), ('0.0.0.0', 8080), ('127.0.0.1', 8000) ]
+    started = False
+    for h,p in hosts:
+        try:
+            print(f"Starting server on {h}:{p} ...")
+            app.run(host=h, port=p, threaded=True)
+            started = True
+            break
+        except OSError as e:
+            print(f"Failed to bind {h}:{p} -> {e}")
+            continue
+    if not started:
+        print("Could not start the web server on any fallback addresses.")
+        print("Possible causes:")
+        print(" - Another process is already using the port (use 'netstat -ano | findstr :8080' to check)")
+        print(" - Firewall or OS restrictions prevent binding; try running with elevated permissions or choose a different port")
+        print(" - On Windows, some ports or binding to 0.0.0.0 may be restricted by security software")
+        print("You can also start the app programmatically with a different host/port or run behind nginx.")

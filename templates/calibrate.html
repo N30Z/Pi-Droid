@@ -1,0 +1,251 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Pi-Droid - Calibrate</title>
+    <style>
+      body{ font-family: Arial, sans-serif; margin:0; }
+      .grid{ display:grid; grid-template-columns: 1fr 1fr; gap:8px; padding:8px; }
+      .cell{ position:relative; background:#111; color:#fff; height:360px; }
+      .label{ position:absolute; left:8px; top:8px; background:rgba(0,0,0,.5); padding:4px 8px; border-radius:4px; font-size:12px; }
+      img.feed{ width:100%; height:100%; object-fit:contain; display:block; }
+      canvas.ov{ position:absolute; left:0; top:0; width:100%; height:100%; }
+      .controls{ padding:8px; background:#eee; display:flex; align-items:center; gap:8px; }
+      button { padding:8px 12px; }
+      #status { margin-left:12px; }
+    </style>
+  </head>
+  <body>
+    <h2 style="margin:8px">Calibration</h2>
+    <div class="grid">
+      <div class="cell">
+        <span class="label">Upperleft – Info_text</span>
+        <img class="feed" id="img0" src="/video_feed">
+        <canvas class="ov" id="cv0"></canvas>
+      </div>
+      <div class="cell">
+        <span class="label">Upperright – Swipe</span>
+        <img class="feed" id="img1" src="/video_feed">
+        <canvas class="ov" id="cv1"></canvas>
+      </div>
+      <div class="cell">
+        <span class="label">Lowerleft – Home</span>
+        <img class="feed" id="img2" src="/video_feed">
+        <canvas class="ov" id="cv2"></canvas>
+      </div>
+      <div class="cell">
+        <span class="label">Lowerright – Code</span>
+        <img class="feed" id="img3" src="/video_feed">
+        <canvas class="ov" id="cv3"></canvas>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button id="saveBtn">Save selected rect</button>
+      <span id="status"></span>
+    </div>
+
+    <script>
+      // Region names are injected by Flask into data-* attribute on body if needed,
+      // but we can reconstruct them deterministically here:
+      const regionNames = {{ region_names|tojson }};
+      // Mapping: [0]=Info_text, [1]=Swipe, [2]=Home, [3]=Code
+
+      const canvases = [];
+      const rects = [null,null,null,null]; // per-canvas work-in-progress rect
+      let saved = {}; // name -> [x,y,w,h] natural coords
+      let activeCanvas = 0;
+      const handleSize = 8;
+
+      // Setup canvases
+      for(let i=0;i<4;i++){
+        const img = document.getElementById('img'+i);
+        const cv  = document.getElementById('cv'+i);
+        canvases.push({img,cv});
+        function resize(){ cv.width = cv.clientWidth; cv.height = cv.clientHeight; draw(); }
+        window.addEventListener('resize', resize);
+        img.addEventListener('load', resize);
+
+        let drawing=false, start=null, dragMode=null, dragStart=null;
+
+        cv.addEventListener('mousedown', e=>{
+          activeCanvas = i;
+          const x = e.offsetX, y = e.offsetY;
+          const r = rects[i];
+          if(r){
+            const h = hitHandle(r, x, y);
+            if(h){ dragMode=h; drawing=true; dragStart={x,y,r:{...r}}; return; }
+            if(pointInRect(r, x, y)){ dragMode='move'; drawing=true; dragStart={x,y,r:{...r}}; return; }
+          }
+          drawing = true; dragMode='new'; start = {x,y};
+          rects[i] = {x:Math.min(start.x,x), y:Math.min(start.y,y), w:0, h:0};
+          draw();
+        });
+
+        cv.addEventListener('mousemove', e=>{
+          const x=e.offsetX, y=e.offsetY;
+          if(!drawing){
+            const r = rects[i];
+            if(r){
+              const h = hitHandle(r, x, y);
+              if(h) cv.style.cursor = handleCursor(h);
+              else if(pointInRect(r, x, y)) cv.style.cursor = 'move';
+              else cv.style.cursor = 'crosshair';
+            }else cv.style.cursor = 'crosshair';
+            return;
+          }
+          if(dragMode==='new'){
+            rects[i] = normRect(start.x, start.y, x, y);
+          } else if(dragMode==='move'){
+            const dx = x - dragStart.x, dy = y - dragStart.y;
+            rects[i] = {...dragStart.r, x: dragStart.r.x + dx, y: dragStart.r.y + dy};
+          } else {
+            rects[i] = resizeByHandle(dragStart.r, dragMode, x - dragStart.x, y - dragStart.y);
+          }
+          draw();
+        });
+
+        cv.addEventListener('mouseup', ()=>{ drawing=false; dragMode=null; });
+        cv.addEventListener('mouseleave', ()=>{ drawing=false; dragMode=null; });
+
+        window.addEventListener('keydown', (e)=>{
+          if(e.key === 'Delete' && activeCanvas === i){
+            rects[i] = null; draw();
+          }
+        });
+      }
+
+      // Helpers
+      function pointInRect(r, x, y){ return x>=r.x && y>=r.y && x<=r.x+r.w && y<=r.y+r.h }
+      function normRect(x0,y0,x1,y1){ return { x: Math.min(x0,x1), y: Math.min(y0,y1), w: Math.abs(x1-x0), h: Math.abs(y1-y0) }; }
+      function handleCursor(h){
+        const map = {n:'ns-resize', s:'ns-resize', e:'ew-resize', w:'ew-resize', ne:'nesw-resize', sw:'nesw-resize', nw:'nwse-resize', se:'nwse-resize'};
+        return map[h] || 'crosshair';
+      }
+      function hitHandle(r, x, y){
+        const hs = handleSize;
+        const handles = {
+          nw: {x:r.x, y:r.y}, ne: {x:r.x+r.w, y:r.y}, sw: {x:r.x, y:r.y+r.h}, se: {x:r.x+r.w, y:r.y+r.h},
+          n:  {x:r.x+r.w/2, y:r.y}, s: {x:r.x+r.w/2, y:r.y+r.h}, w:{x:r.x, y:r.y+r.h/2}, e:{x:r.x+r.w, y:r.y+r.h/2},
+        };
+        for(const k in handles){
+          const c = handles[k];
+          if(Math.abs(x - c.x) <= hs && Math.abs(y - c.y) <= hs) return k;
+        }
+        return null;
+      }
+      function resizeByHandle(r, h, dx, dy){
+        const nr = {...r};
+        if(h==='move') return {...r, x:r.x+dx, y:r.y+dy};
+        if(h.includes('n')){ nr.y = r.y + dy; nr.h = r.h - dy; }
+        if(h.includes('s')){ nr.h = r.h + dy; }
+        if(h.includes('w')){ nr.x = r.x + dx; nr.w = r.w - dx; }
+        if(h.includes('e')){ nr.w = r.w + dx; }
+        if(nr.w < 0){ nr.x += nr.w; nr.w = Math.abs(nr.w); }
+        if(nr.h < 0){ nr.y += nr.h; nr.h = Math.abs(nr.h); }
+        return nr;
+      }
+      function getScale(i){
+        const img = canvases[i].img;
+        const dw = img.clientWidth, dh = img.clientHeight;
+        const nw = img.naturalWidth || dw, nh = img.naturalHeight || dh;
+        return { scaleX: nw/dw, scaleY: nh/dh };
+      }
+      function toDisplayRect(i, rectNat){
+        const {scaleX, scaleY} = getScale(i);
+        if(!rectNat || rectNat.length !== 4) return null;
+        const [x,y,w,h] = rectNat;
+        return { x: Math.round(x/scaleX), y: Math.round(y/scaleY), w: Math.round(w/scaleX), h: Math.round(h/scaleY) };
+      }
+      function toNaturalRect(i, rDisp){
+        const {scaleX, scaleY} = getScale(i);
+        return [ Math.round(rDisp.x * scaleX), Math.round(rDisp.y * scaleY),
+                 Math.round(rDisp.w * scaleX), Math.round(rDisp.h * scaleY) ];
+      }
+
+      // Rendering
+      function draw(){
+        for(let i=0;i<4;i++){
+          const {img,cv} = canvases[i];
+          const ctx = cv.getContext('2d');
+          ctx.clearRect(0,0,cv.width,cv.height);
+
+          // Overlay saved region (blue) if exists for that window's name
+          const name = regionNames[i];
+          const rectNat = saved[name];
+          if(rectNat){
+            const r = toDisplayRect(i, rectNat);
+            if(r){
+              ctx.strokeStyle = '#2b6cb0';
+              ctx.lineWidth = 2;
+              ctx.strokeRect(r.x, r.y, r.w, r.h);
+              ctx.fillStyle = 'rgba(43,108,176,0.15)';
+              ctx.fillRect(r.x, r.y, r.w, r.h);
+            }
+          }
+
+          // Editable rect (green)
+          const r = rects[i];
+          if(r){
+            ctx.strokeStyle='lime';
+            ctx.lineWidth=2;
+            ctx.strokeRect(r.x, r.y, r.w, r.h);
+            ctx.fillStyle='rgba(0,255,0,0.15)';
+            ctx.fillRect(r.x, r.y, r.w, r.h);
+            drawHandle(ctx, r.x, r.y);
+            drawHandle(ctx, r.x+r.w, r.y);
+            drawHandle(ctx, r.x, r.y+r.h);
+            drawHandle(ctx, r.x+r.w, r.y+r.h);
+            drawHandle(ctx, r.x+r.w/2, r.y);
+            drawHandle(ctx, r.x+r.w/2, r.y+r.h);
+            drawHandle(ctx, r.x, r.y+r.h/2);
+            drawHandle(ctx, r.x+r.w, r.y+r.h/2);
+          }
+        }
+      }
+      function drawHandle(ctx, x, y){
+        const s = handleSize;
+        ctx.fillStyle = 'lime';
+        ctx.fillRect(x - s/2, y - s/2, s, s);
+      }
+
+      // Load saved regions to show overlays
+      async function loadSaved(){
+        try{
+          const res = await fetch('/api/regions');
+          const j = await res.json();
+          saved = j.regions || {};
+        }catch(e){ saved = {}; }
+        draw();
+      }
+      loadSaved();
+      setInterval(loadSaved, 3000);
+
+      // Save logic: find the first canvas with a drawn rect, use fixed name by index
+      document.getElementById('saveBtn').addEventListener('click', async ()=>{
+        const which = rects.findIndex(r=>r!=null);
+        const status = document.getElementById('status');
+        if(which < 0){ status.textContent = 'Draw a rectangle on one of the windows first'; return; }
+        const r = rects[which];
+        if(!r || r.w < 2 || r.h < 2){ status.textContent = 'Rectangle is too small'; return; }
+        const name = regionNames[which];
+        const rect = toNaturalRect(which, r);
+        status.textContent = 'Saving...';
+        try{
+          const res = await fetch('/api/calibrate_save', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({name, rect})
+          });
+          const j = await res.json();
+          if(res.ok){
+            status.textContent = 'Saved ' + name;
+            rects[which] = null;
+            await loadSaved();
+          } else {
+            status.textContent = 'Error: ' + (j.error || JSON.stringify(j));
+          }
+        }catch(err){ status.textContent = 'Error: ' + err; }
+      });
+    </script>
+  </body>
+</html>
