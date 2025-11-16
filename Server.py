@@ -123,9 +123,21 @@ def api_status():
 
 @app.route('/api/start')
 def api_start():
+    count = request.args.get("count", default=4, type=int)
+    state['required_regions'] = count
     state['running'] = True
     state['paused'] = False
     return jsonify(state)
+
+@app.route('/api/send_number', methods=['POST'])
+def api_send_number():
+    data = request.get_json() or {}
+    val = data.get('value')
+    if val is None:
+        return jsonify({'error':'missing value'}), 400
+    # Hier kannst du tun, was du willst – Logging, Weiterverarbeitung etc.
+    print("Received number:", val)
+    return jsonify({'received': val})
 
 @app.route('/api/stop')
 def api_stop():
@@ -202,8 +214,6 @@ def api_goal():
 # App runner
 # ---------------------------
 if __name__ == '__main__':
-    import os
-    print("Template path:", os.path.abspath(app.template_folder))
     hosts = [ ('0.0.0.0', 8888), ('127.0.0.1', 8080), ('0.0.0.0', 8080), ('127.0.0.1', 8000) ]
     started = False
     for h,p in hosts:

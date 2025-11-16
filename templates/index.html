@@ -18,14 +18,24 @@
   <body>
     <div class="container">
       <div class="left">
-        <button onclick="api('/api/start')">Start</button>
+        <button onclick="startWithCount()">Start</button>
+        <hr>
+        <label><b>Region count:</b></label>
+        <select id="regionCount" style="width:100%;padding:6px;font-size:16px;">
+        <option value="4">4</option>
+        <option value="5">5</option>
+        <option value="6">6</option>
         <button onclick="api('/api/stop')">Stop</button>
         <button onclick="api('/api/pause')">Pause</button>
         <button onclick="api('/api/resume')">Resume</button>
         <hr>
-        <button onclick="window.open('/calibrate','_blank')">Run all camera calibrations</button>
+        <button onclick="window.open('/calibrate','_blank')">Run camera calibration</button>
+        </select>
         <div id="goal" style="margin-top:16px;color:darkred;font-weight:bold;"></div>
-        <div id="regionsNotice" class="notice"></div>
+        <hr>
+        <label><b>Send number:</b></label>
+        <input id="numberInput" type="number" style="width:100%;padding:6px;font-size:16px;">
+        <button onclick="sendNumber()" style="margin-top:6px;">Send</button>
       </div>
       <div class="right">
         <img id="video" src="/video_feed" style="max-width:100%; max-height:100%;"/>
@@ -37,36 +47,39 @@
     </div>
 
     <script>
-      function api(path){ fetch(path).then(r=>r.json()).then(d=>updateStatus(d)) }
-      function updateStatus(d){
-        document.getElementById('digits').textContent = d.current_digits || 0;
-        document.getElementById('line').textContent = d.line_progress || 0;
-        document.getElementById('lines').textContent = d.num_lines || 0;
-        var pct = d.num_lines ? Math.round((d.line_progress/d.num_lines)*100) : 0;
-        document.getElementById('barinner').style.width = pct + '%';
-        document.getElementById('barinner').textContent = pct + '%';
-        if(d.goal_msg){ document.getElementById('goal').textContent = d.goal_msg }
-      }
-      setInterval(function(){ fetch('/api/status').then(r=>r.json()).then(updateStatus) }, 1000);
+        function sendNumber(){
+            const val = document.getElementById('numberInput').value;
+            if(!val){ alert("Enter a number."); return; }
 
-      function checkRegions(){
-        fetch('/api/regions')
-          .then(r => r.json())
-          .then(j => {
-            const box = document.getElementById('regionsNotice');
-            const names = Object.keys(j.regions || {});
-            if(names.length === 0){
-              box.style.display = 'block';
-              box.innerHTML = 'No saved regions found. <a href="/calibrate" target="_blank">Open Calibration</a> to draw and save required regions.';
-            } else {
-              box.style.display = 'none';
-              box.innerHTML = '';
-            }
-          })
-          .catch(()=>{});
-      }
-      checkRegions();
-      setInterval(checkRegions, 5000);
+            fetch('/api/send_number', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({value: val})
+            })
+            .then(r=>r.json())
+            .then(j=>console.log("Sent:", j));
+        }
+
+        function startWithCount(){
+            const count = document.getElementById('regionCount').value;
+            fetch('/api/start?count='+count)
+            .then(r=>r.json())
+            .then(d=>updateStatus(d));
+        }
+
+        function api(path){ fetch(path).then(r=>r.json()).then(d=>updateStatus(d)) }
+        function updateStatus(d){
+            document.getElementById('digits').textContent = d.current_digits || 0;
+            document.getElementById('line').textContent = d.line_progress || 0;
+            document.getElementById('lines').textContent = d.num_lines || 0;
+            var pct = d.num_lines ? Math.round((d.line_progress/d.num_lines)*100) : 0;
+            document.getElementById('barinner').style.width = pct + '%';
+            document.getElementById('barinner').textContent = pct + '%';
+            if(d.goal_msg){ document.getElementById('goal').textContent = d.goal_msg }
+        }
+        setInterval(function(){ fetch('/api/status').then(r=>r.json()).then(updateStatus) }, 1000);
+        
+        setInterval(checkRegions, 500);
     </script>
   </body>
 </html>
