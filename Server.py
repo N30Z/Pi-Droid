@@ -214,21 +214,4 @@ def api_goal():
 # App runner
 # ---------------------------
 if __name__ == '__main__':
-    hosts = [ ('0.0.0.0', 8888), ('127.0.0.1', 8080), ('0.0.0.0', 8080), ('127.0.0.1', 8000) ]
-    started = False
-    for h,p in hosts:
-        try:
-            print(f"Starting server on {h}:{p} ...")
-            app.run(host=h, port=p, threaded=True)
-            started = True
-            break
-        except OSError as e:
-            print(f"Failed to bind {h}:{p} -> {e}")
-            continue
-    if not started:
-        print("Could not start the web server on any fallback addresses.")
-        print("Possible causes:")
-        print(" - Another process is already using the port (use 'netstat -ano | findstr :8080' to check)")
-        print(" - Firewall or OS restrictions prevent binding; try running with elevated permissions or choose a different port")
-        print(" - On Windows, some ports or binding to 0.0.0.0 may be restricted by security software")
-        print("You can also start the app programmatically with a different host/port or run behind nginx.")
+    app.run(host='0.0.0.0', port=8080, threaded=True)
